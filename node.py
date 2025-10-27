@@ -11,10 +11,12 @@ def apply_model_with_shifted_timestep(
         shifted_timestep: int = None,
         **kwargs,
 ):
-    sigma = t
+    device = x.device
+    sigma = t.to(device=device, dtype=x.dtype)
     xc = self.model_sampling.calculate_input(sigma, x)
     if c_concat is not None:
-        xc = torch.cat([xc] + [c_concat], dim=1)
+        c_concat = c_concat.to(device=device, dtype=self.manual_cast_dtype or self.get_dtype())
+        xc = torch.cat((xc, c_concat), dim=1)
 
     context = c_crossattn
     dtype = self.get_dtype()
@@ -24,19 +26,24 @@ def apply_model_with_shifted_timestep(
 
     xc = xc.to(dtype)
     if shifted_timestep is None:
-        t = self.model_sampling.timestep(t).float()
+        t = self.model_sampling.timestep(t).float().to(device)
     else:
         num_train_timesteps = len(self.model_sampling.log_sigmas)
-        t = (self.model_sampling.timestep(t) * (shifted_timestep / num_train_timesteps)).long()
+        t = (self.model_sampling.timestep(t) * (shifted_timestep / num_train_timesteps)).long().to(device)
 
-    context = context.to(dtype)
+    if context is not None:
+        if isinstance(context, (list, tuple)):
+            context = type(context)(c.to(device=device, dtype=dtype) for c in context)
+        else:
+            context = context.to(device=device, dtype=dtype)
     extra_conds = {}
-    for o in kwargs:
-        extra = kwargs[o]
-        if hasattr(extra, "dtype"):
-            if extra.dtype != torch.int and extra.dtype != torch.long:
-                extra = extra.to(dtype)
-        extra_conds[o] = extra
+    for k, extra in kwargs.items():
+        if torch.is_tensor(extra):
+            if extra.dtype in (torch.int64, torch.int32):
+                extra = extra.to(device)
+            else:
+                extra = extra.to(device=device, dtype=dtype)
+        extra_conds[k] = extra
 
     model_output = self.diffusion_model(xc, t, context=context, control=control,
                                         transformer_options=transformer_options, **extra_conds).float()
@@ -44,7 +51,7 @@ def apply_model_with_shifted_timestep(
     if shifted_timestep is None:
         return self.model_sampling.calculate_denoised(sigma, model_output, x)
 
-    denoised_sigma = self.model_sampling.sigma(t)
+    denoised_sigma = self.model_sampling.sigma(t).to(device)
     denoised_sigma = denoised_sigma.view(denoised_sigma.shape[:1] + (1,) * (x.ndim - 1))
     x = xc * ((denoised_sigma ** 2 + self.model_sampling.sigma_data ** 2) ** 0.5)
     return self.model_sampling.calculate_denoised(denoised_sigma, model_output, x)
