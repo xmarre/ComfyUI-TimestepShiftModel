@@ -72,11 +72,14 @@ class TimestepShiftModel:
     FUNCTION = "shift_model_timestep"
 
     def shift_model_timestep(self, model, shifted_timestep):
-        model.model._apply_model = MethodType(
-            partial(apply_model_with_shifted_timestep, shifted_timestep=shifted_timestep),
-            model.model,
-        )
-        return (model, )
+        new = model.clone()  # wrapper clone; inner UNet is shared
+        if not getattr(new, "_tsm_wrapped", False):
+            new.apply_model = MethodType(
+                partial(apply_model_with_shifted_timestep, shifted_timestep=shifted_timestep),
+                new,
+            )
+            new._tsm_wrapped = True
+        return (new, )
 
 
 NODE_CLASS_MAPPINGS = {
